@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>高画質フレームベース カーソル追従</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background-color: #000;
+        }
+        /* キャンバスをフルスクリーンに */
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="viewCanvas" aria-label="カーソルの左右移動でシマフクロウの動画フレームを切り替えます"></canvas>
+    <div id="status" role="status" style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);color:white;font:16px sans-serif;text-align:center">読み込み中…</div>
+
+    <script>
+        const canvas = document.getElementById('viewCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // 抽出したフレーム（または生成したフレーム）を格納する配列
+        const frames = [];
+        const MAX_FRAMES = 133; // 連番画像の総枚数
+        
+        let currentFrameFloat = (MAX_FRAMES - 1) / 2; // Lerp用の現在フレーム（初期値は中央）
+        let targetFrame = (MAX_FRAMES - 1) / 2;       // カーソル位置から算出した目標フレーム
+        const RESPONSE_MS = 110;   // 滑らかさの係数（0.01〜1.0）小さいほどゆっくり追従
+        
+        let isLoaded = false;
+        
+        // 画面リサイズ対応（フルスクリーン維持）
+        function resize() {
+            // Retinaディスプレイ等に対応するためデバイスピクセル比を考慮
+            const dpr = Math.min(window.devicePixelRatio || 1, 2);
+            canvas.width = window.innerWidth * dpr;
+            canvas.height = window.innerHeight * dpr;
+            if(isLoaded) drawCurrentFrame();
+        }
+        window.addEventListener('resize', resize);
+        resize();
+        
+        // 動画から抽出した133枚のWebP画像を読み込みます。
+        const status = document.getElementById('status');
+        let loadedCount = 0;
+        Promise.all(Array.from({length: MAX_FRAMES}, (_, i) => new Promise((resolve, reject) => {
+            const image = new Image();
+            image.onload = () => {
+                frames[i] = image;
+                status.textContent = `読み込み中 ${++loadedCount} / ${MAX_FRAMES}`;
+                resolve();
+            };
+            image.onerror = () => reject(new Error(`画像 ${i} を読み込めませんでした`));
+            image.src = `frames/frame_${String(i).padStart(3, '0')}.webp`;
+        }))).then(() => {
+            isLoaded = true;
+            status.hidden = true;
+            requestAnimationFrame(animate);
+        }).catch(error => {
+            status.textContent = `${error.message}。HTMLとframesフォルダーを同じ場所に配置してください。`;
+        });
+
+        // =========================================================
+        // カーソル追従とLerp（線形補間）描画ロジック
+        // =========================================================
+        
+        // マウスやタッチのX座標から、表示すべきターゲットフレームを算出
+        function updateTarget(clientX) {
+            const normalizedX = Math.max(0, Math.min(1, clientX / window.innerWidth));
+            targetFrame = normalizedX * (MAX_FRAMES - 1);
+        }
+        
+        window.addEventListener('mousemove', (e) => updateTarget(e.clientX));
+        window.addEventListener('touchmove', (e) => updateTarget(e.touches[0].clientX), {passive: true});
+        window.addEventListener('touchstart', (e) => updateTarget(e.touches[0].clientX), {passive: true});
+        
+        // アニメーションループ（requestAnimationFrameによる駆動）
+        let previousTime = 0;
+        let lastDrawn = -1;
+        function animate(time) {
+            const dt = previousTime ? Math.min(time - previousTime, 50) : 16.67;
+            previousTime = time;
+            currentFrameFloat += (targetFrame - currentFrameFloat) * (1 - Math.exp(-dt / RESPONSE_MS));
+            if (Math.abs(targetFrame - currentFrameFloat) < 0.0001) currentFrameFloat = targetFrame;
+            if (currentFrameFloat !== lastDrawn) {
+                drawCurrentFrame();
+                lastDrawn = currentFrameFloat;
+            }
+            requestAnimationFrame(animate);
+        }
+
+        // 算出されたフレームをCanvasに描画
+        function drawCurrentFrame() {
+            // 小数点を切り捨てて配列のインデックスにする
+            const frameIndex = Math.max(0, Math.min(MAX_FRAMES - 1, Math.floor(currentFrameFloat)));
+            if (!frames[frameIndex]) return;
+            
+            const frame = frames[frameIndex];
+            
+            // フルスクリーン(cover)になるようアスペクト比を計算
+            const scale = Math.max(canvas.width / frame.width, canvas.height / frame.height);
+            const drawW = frame.width * scale;
+            const drawH = frame.height * scale;
+            const drawX = (canvas.width - drawW) / 2;
+            const drawY = (canvas.height - drawH) / 2;
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // 滑らかさを保つため、アンチエイリアスを有効化
+            ctx.imageSmoothingEnabled = true; 
+            ctx.imageSmoothingQuality = 'high';
+            
+            ctx.globalAlpha = 1;
+            ctx.drawImage(frame, drawX, drawY, drawW, drawH);
+            // 補間済みの隣接画像を連続的にブレンドし、整数境界の段差をなくします。
+            const next = frames[Math.min(frameIndex + 1, MAX_FRAMES - 1)];
+            const fraction = Math.max(0, Math.min(1, currentFrameFloat - frameIndex));
+            if (fraction > 0 && next !== frame) {
+                ctx.globalAlpha = fraction;
+                ctx.drawImage(next, drawX, drawY, drawW, drawH);
+                ctx.globalAlpha = 1;
+            }
+        }
+    </script>
+</body>
+</html>
